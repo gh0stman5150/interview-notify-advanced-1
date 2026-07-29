@@ -38,7 +38,9 @@ from pathlib import Path
 import sys
 import queue
 
-VERSION = '1.4.0'
+from interview_modes import default_bot_nicks, normalize_mode
+
+VERSION = '1.5.0'
 CONFIG_FILE = Path.home() / '.interview-notify-config.json'
 
 
@@ -100,13 +102,14 @@ class InterviewNotifyGUI:
         mode_combo = ttk.Combobox(row3, textvariable=self.mode_var, values=["red", "ops"],
                                   state="readonly", width=22)
         mode_combo.pack(side=tk.LEFT, padx=5)
+        mode_combo.bind("<<ComboboxSelected>>", self.on_mode_changed)
 
         ttk.Label(row3, text="Rate Limit (sec):", width=15).pack(side=tk.LEFT, padx=(15, 0))
         self.rate_limit_var = tk.StringVar(value="60")
         ttk.Entry(row3, textvariable=self.rate_limit_var, width=22).pack(side=tk.LEFT, padx=5)
 
         # Log Directories
-        log_dir_label = ttk.Label(config_frame, text="IRC Log Directories:")
+        log_dir_label = ttk.Label(config_frame, text="IRC Log Files or Directories:")
         log_dir_label.pack(anchor=tk.W, pady=(10, 5))
 
         log_dir_container = ttk.Frame(config_frame)
@@ -124,6 +127,8 @@ class InterviewNotifyGUI:
         log_dir_btn_frame.pack(side=tk.LEFT, padx=(5, 0))
         ttk.Button(log_dir_btn_frame, text="Add Directory",
                   command=self.add_log_dir).pack(pady=2, fill=tk.X)
+        ttk.Button(log_dir_btn_frame, text="Add Log File",
+                  command=self.add_log_file).pack(pady=2, fill=tk.X)
         ttk.Button(log_dir_btn_frame, text="Remove",
                   command=self.remove_log_dir).pack(pady=2, fill=tk.X)
 
@@ -206,6 +211,15 @@ class InterviewNotifyGUI:
             self.notif_log_entry.config(state=tk.DISABLED)
             self.notif_log_button.config(state=tk.DISABLED)
 
+    def on_mode_changed(self, _event=None):
+        """Update an untouched default bot nick when the mode changes."""
+        mode = normalize_mode(self.mode_var.get())
+        current_bot_nicks = self.bot_nicks_var.get().strip()
+        if mode == "ops" and current_bot_nicks in ("", "Gatekeeper"):
+            self.bot_nicks_var.set(default_bot_nicks(mode))
+        elif mode == "red" and current_bot_nicks in ("", "Hermes"):
+            self.bot_nicks_var.set(default_bot_nicks(mode))
+
     def browse_notif_log(self):
         filename = filedialog.asksaveasfilename(
             title="Select notification log file",
@@ -220,6 +234,15 @@ class InterviewNotifyGUI:
         if directory and directory not in self.log_dirs:
             self.log_dirs.append(directory)
             self.log_dir_listbox.insert(tk.END, directory)
+
+    def add_log_file(self):
+        filename = filedialog.askopenfilename(
+            title="Select IRC log file",
+            filetypes=[("Log files", "*.log"), ("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if filename and filename not in self.log_dirs:
+            self.log_dirs.append(filename)
+            self.log_dir_listbox.insert(tk.END, filename)
 
     def remove_log_dir(self):
         selection = self.log_dir_listbox.curselection()
@@ -237,7 +260,7 @@ class InterviewNotifyGUI:
             messagebox.showerror("Configuration Error", "Your Nick is required")
             return False
         if not self.log_dirs:
-            messagebox.showerror("Configuration Error", "At least one log directory is required")
+            messagebox.showerror("Configuration Error", "At least one log file or directory is required")
             return False
         return True
 
@@ -355,7 +378,7 @@ class InterviewNotifyGUI:
             "server": self.server_var.get(),
             "nick": self.nick_var.get(),
             "bot_nicks": self.bot_nicks_var.get(),
-            "mode": self.mode_var.get(),
+            "mode": normalize_mode(self.mode_var.get()),
             "rate_limit": self.rate_limit_var.get(),
             "log_dirs": self.log_dirs,
             "check_bot_nicks": self.check_bot_nicks_var.get(),
@@ -382,8 +405,9 @@ class InterviewNotifyGUI:
             self.topic_var.set(config.get("topic", ""))
             self.server_var.set(config.get("server", "https://ntfy.sh/"))
             self.nick_var.set(config.get("nick", ""))
-            self.bot_nicks_var.set(config.get("bot_nicks", "Gatekeeper"))
-            self.mode_var.set(config.get("mode", "red"))
+            mode = normalize_mode(config.get("mode", "red"))
+            self.mode_var.set(mode)
+            self.bot_nicks_var.set(config.get("bot_nicks") or default_bot_nicks(mode))
             self.rate_limit_var.set(config.get("rate_limit", "60"))
             self.check_bot_nicks_var.set(config.get("check_bot_nicks", True))
             self.enable_notif_log_var.set(config.get("enable_notif_log", False))

@@ -15,6 +15,9 @@ it sends push notifications when:
 - you lose your spot in the queue due to a netsplit
 - you get kicked
 
+**new in v1.5.0:**
+- **Orpheus (OPS) support** – monitor Hermes query logs and get a critical alert when your interview room is ready
+
 **new in v1.4.0:**
 - **GUI application** – optional graphical interface for easy configuration (use `python3 interview_notify_gui.py`)
 - **interview analytics** – track interview statistics, success rates, queue lengths, and trends (enable with `--enable-analytics`)
@@ -83,9 +86,9 @@ pretty self explanatory if you read the help:
 ```
 ./interview_notify.py -h
 
-usage: interview_notify.py [-h] --topic TOPIC [--server SERVER] --log-dir PATH --nick NICK [--check-bot-nicks | --no-check-bot-nicks] [--bot-nicks NICKS] [--mode {red,orp}] [-v] [--version]
+usage: interview_notify.py [-h] --topic TOPIC [--server SERVER] --log-dir PATH --nick NICK [--check-bot-nicks | --no-check-bot-nicks] [--bot-nicks NICKS] [--mode {red,ops,orp}] [-v] [--version]
 
-IRC Interview Notifier v1.4.0
+IRC Interview Notifier v1.5.0
 https://github.com/ftc2/interview-notify
 
 options:
@@ -96,8 +99,8 @@ options:
   --nick NICK           your IRC nick
   --check-bot-nicks, --no-check-bot-nicks
                         attempt to parse bot's nick. disable if your log files are not like '<nick> message' – default: enabled
-  --bot-nicks NICKS     comma-separated list of bot nicks to watch – default: Gatekeeper
-  --mode {red,orp}      interview mode (affects triggers) – default: red
+  --bot-nicks NICKS     comma-separated list of bot nicks to watch – default: Gatekeeper for red, Hermes for ops
+  --mode {red,ops,orp}  interview mode (orp is a legacy alias for ops) – default: red
   -v                    verbose (invoke multiple times for more verbosity)
   --version             show program's version number and exit
 
@@ -125,6 +128,26 @@ then type `Currently interviewing: your_nick` in IRC.
 if it doesn't work, maybe you have a wonky log file format. try with `--no-check-bot-nicks`:
 
 `interview_notify.py --topic your_topic --log-dir /path/to/logs --nick your_nick --no-check-bot-nicks -v`
+
+### Orpheus (OPS)
+
+Orpheus sends the interview-room invitation in a private message from Hermes. Point
+the notifier at the specific log file that records Hermes notices or at your IRC
+client's Hermes query-log directory:
+
+```bash
+interview_notify.py --mode ops --topic your_topic \
+  --log-dir '/path/to/irc/logs/#recruitment.log' \
+  --nick your_nick
+```
+
+In `ops` mode, Hermes is the default bot nick. The legacy mode name `orp` is also
+accepted for compatibility. If your IRC client does not include the sender in each
+query-log line, add `--no-check-bot-nicks`.
+
+The script only reads local IRC logs; it does not connect to the Orpheus IRC network.
+Passing a specific log file is recommended when the surrounding directory contains
+server and network logs that are updated independently.
 
 ## advanced features
 
@@ -187,6 +210,12 @@ Interview Statistics (Last 30 days)
 ```
 
 database is stored at `~/.interview-notify-history.db` by default. old data (>90 days) is automatically cleaned up.
+
+### running tests
+
+```bash
+python3 -m unittest discover -s tests
+```
 
 ### notification history
 

@@ -6,6 +6,7 @@ from time import sleep, time
 from datetime import datetime
 from file_read_backwards import FileReadBackwards
 from hashlib import sha256
+from interview_modes import default_bot_nicks, normalize_mode, parse_interview_event
 from urllib.parse import urljoin
 
 try:
@@ -15,7 +16,7 @@ except ImportError:
     DATABASE_AVAILABLE = False
     logging.warning("Interview database module not available - analytics disabled")
 
-VERSION = '1.4.0'
+VERSION = '1.5.0'
 default_server = 'https://ntfy.sh/'
 
 # Rate limiting and notification history
@@ -36,11 +37,11 @@ On mobile, I suggest enabling the 'Instant delivery' feature as well as 'Keep al
   formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--topic', required=True, help='ntfy topic name to POST notifications to')
 parser.add_argument('--server', default=default_server, help='ntfy server to POST notifications to – default: {}'.format(default_server))
-parser.add_argument('--log-dir', required=True, dest='paths', type=Path, action='append', help='path to IRC logs (can be specified multiple times for multi-channel support)')
+parser.add_argument('--log-dir', required=True, dest='paths', type=Path, action='append', help='path to an IRC log file or directory (can be specified multiple times)')
 parser.add_argument('--nick', required=True, help='your IRC nick')
 parser.add_argument('--check-bot-nicks', default=True, action=argparse.BooleanOptionalAction, help="attempt to parse bot's nick. disable if your log files are not like '<nick> message' – default: enabled")
-parser.add_argument('--bot-nicks', metavar='NICKS', default='Gatekeeper', help='comma-separated list of bot nicks to watch – default: Gatekeeper')
-parser.add_argument('--mode', choices=['red', 'ops'], default='red', help='interview mode (affects triggers) – default: red')
+parser.add_argument('--bot-nicks', metavar='NICKS', help='comma-separated list of bot nicks to watch – default: Gatekeeper for red, Hermes for ops')
+parser.add_argument('--mode', choices=['red', 'ops', 'orp'], default='red', help='interview mode (orp is a legacy alias for ops) – default: red')
 parser.add_argument('--notification-log', dest='notif_log', type=Path, help='path to file for logging all notifications (optional)')
 parser.add_argument('--rate-limit', dest='rate_limit', type=int, default=60, help='seconds to wait before sending duplicate notifications – default: 60')
 parser.add_argument('--enable-analytics', dest='enable_analytics', action='store_true', help='enable interview statistics tracking and analysis')
@@ -50,6 +51,13 @@ parser.add_argument('--version', action='version', version='{} v{}'.format(parse
 
 def log_scan(log_path):
   """Poll dir for most recently modified log file and spawn a parser thread for the log"""
+  if log_path.is_file():
+    logging.info('scanner: watching log file "{}"'.format(log_path))
+    parser, _parser_stop = spawn_parser(log_path)
+    parser.start()
+    parser.join()
+    return
+
   logging.info('scanner: watching logs in "{}"'.format(log_path))
   curr = find_latest_log(log_path)
   logging.debug('scanner: current log: "{}"'.format(curr.name))
@@ -96,16 +104,30 @@ def log_parse(log_path, parser_stop):
 
   for line in tail(log_path, parser_stop):
     logging.debug(line)
+    interview_event = parse_interview_event(
+      line,
+      args.mode,
+      args.nick,
+      check_bot_nicks=args.check_bot_nicks,
+      bot_nicks=args.bot_nicks,
+    )
 
     # Check for analytics events first (before notifications)
     if db and args.enable_analytics:
       # Check for interview start
-      interview_start = parse_interview_start(line)
-      if interview_start:
-        username, queue_length = interview_start
-        db.record_interview_start(username, queue_length, channel)
-        db.record_queue_snapshot(queue_length, channel)
-        logging.debug(f'Analytics: Recorded interview start for {username}, queue: {queue_length}')
+      if interview_event and interview_event.username:
+        event_channel = interview_event.interview_channel or channel
+        db.record_interview_start(
+          interview_event.username,
+          interview_event.queue_length,
+          event_channel,
+        )
+        if interview_event.queue_length is not None:
+          db.record_queue_snapshot(interview_event.queue_length, event_channel)
+        logging.debug(
+          f'Analytics: Recorded interview start for {interview_event.username}, '
+          f'queue: {interview_event.queue_length}'
+        )
 
       # Check for interview outcome
       outcome_data = parse_interview_outcome(line)
@@ -115,12 +137,18 @@ def log_parse(log_path, parser_stop):
         logging.debug(f'Analytics: Recorded {outcome} outcome for {username}')
 
     # Now check for notifications
-    if check_trigger(line, 'Currently interviewing: {}'.format(args.nick)):
-      logging.info('YOUR INTERVIEW IS HAPPENING ❗')
-      notify(line, title='Your interview is happening❗', tags='rotating_light', priority=5, notification_type='your_interview')
-    elif check_trigger(line, 'Currently interviewing:'):
-      logging.info('interview detected ⚠️')
-      notify(line, title='Interview detected', tags='warning', notification_type='interview')
+    if interview_event:
+      if interview_event.notification_type == 'your_interview':
+        logging.info('YOUR INTERVIEW IS HAPPENING ❗')
+      else:
+        logging.info('interview detected ⚠️')
+      notify(
+        line,
+        title=interview_event.title,
+        tags=interview_event.tags,
+        priority=interview_event.priority,
+        notification_type=interview_event.notification_type,
+      )
     elif check_trigger(line, '{}:'.format(args.nick), disregard_bot_nicks=True):
       logging.info('mention detected ⚠️')
       notify(line, title="You've been mentioned", tags='wave', notification_type='mention')
@@ -316,6 +344,9 @@ def crit_quit(msg):
 # ----------
 
 args = parser.parse_args()
+args.mode = normalize_mode(args.mode)
+if args.bot_nicks is None:
+  args.bot_nicks = default_bot_nicks(args.mode)
 
 args.verbose = 70 - (10*args.verbose) if args.verbose > 0 else 0
 logging.basicConfig(level=args.verbose, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -330,14 +361,9 @@ if args.enable_analytics:
 else:
   logging.debug('Analytics disabled')
 
-if args.mode != 'red':
-  crit_quit('"{}" mode not implemented'.format(args.mode))
-
 # Validate all log paths
 for path in args.paths:
-  if path.is_file():
-    crit_quit('log path invalid: dir expected, got file – "{}"'.format(path))
-  elif not path.is_dir():
+  if not path.is_file() and not path.is_dir():
     crit_quit('log path invalid – "{}"'.format(path))
 
 # Start scanner thread for each log directory (multi-channel support)
