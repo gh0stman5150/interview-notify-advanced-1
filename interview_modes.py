@@ -88,6 +88,24 @@ def _parse_red_event(line, nick, check_bot_nicks, bot_nicks):
 
 def _parse_ops_event(line, nick, check_bot_nicks, bot_nicks):
     clean_line = _remove_html_tags(line)
+    queue_open_match = re.search(
+        r'The\s+queue\s+is\s+now\s+open\.',
+        clean_line,
+        re.IGNORECASE,
+    )
+    if queue_open_match and _bot_matches(
+        line,
+        queue_open_match.group(0),
+        check_bot_nicks,
+        bot_nicks,
+    ):
+        return InterviewEvent(
+            notification_type='queue_open',
+            title='Orpheus interview queue is open',
+            tags='loudspeaker',
+            priority=4,
+        )
+
     match = re.search(
         r'You\s+have\s+been\s+(?:have\s+been\s+)*invited'
         r'\s+to\s+take\s+your\s+interview'

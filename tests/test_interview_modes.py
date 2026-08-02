@@ -18,6 +18,21 @@ class ModeConfigurationTests(unittest.TestCase):
 
 
 class OrpheusParserTests(unittest.TestCase):
+    def test_parses_observed_queue_open_announcements(self):
+        lines = [
+            'Aug 01 22:13:34 <hermes>\tThe queue is now open. '
+            'Interviews will start immediately.',
+            'Aug 01 22:16:02 <hermes>\tThe queue is now open. '
+            'Interviews will start immediately.',
+        ]
+
+        for line in lines:
+            with self.subTest(line=line):
+                event = parse_interview_event(line, 'ops', 'candidate')
+
+                self.assertIsNotNone(event)
+                self.assertEqual(event.notification_type, 'queue_open')
+
     def test_parses_observed_duplicate_wording(self):
         event = parse_interview_event(
             'Jul 22 14:01:02 -hermes-\t'

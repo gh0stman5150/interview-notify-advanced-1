@@ -16,7 +16,7 @@ it sends push notifications when:
 - you get kicked
 
 **new in v1.5.0:**
-- **Orpheus (OPS) support** – monitor Hermes query logs and get a critical alert when your interview room is ready
+- **Orpheus (OPS) support** – get notified when the interview queue opens and receive a critical alert when your interview room is ready
 
 **new in v1.4.0:**
 - **GUI application** – optional graphical interface for easy configuration (use `python3 interview_notify_gui.py`)
@@ -131,9 +131,9 @@ if it doesn't work, maybe you have a wonky log file format. try with `--no-check
 
 ### Orpheus (OPS)
 
-Orpheus sends the interview-room invitation in a private message from Hermes. Point
-the notifier at the specific log file that records Hermes notices or at your IRC
-client's Hermes query-log directory:
+Orpheus announces queue openings in the recruitment channel and sends the interview-room
+invitation in a private message from Hermes. Point the notifier at both relevant log files
+or at a directory containing them:
 
 ```bash
 interview_notify.py --mode ops --topic your_topic \
@@ -143,7 +143,8 @@ interview_notify.py --mode ops --topic your_topic \
 
 In `ops` mode, Hermes is the default bot nick. The legacy mode name `orp` is also
 accepted for compatibility. If your IRC client does not include the sender in each
-query-log line, add `--no-check-bot-nicks`.
+log line, add `--no-check-bot-nicks`. Queue-open notifications use the configured rate
+limit; interview-room invitations are critical and are never rate-limited.
 
 The script only reads local IRC logs; it does not connect to the Orpheus IRC network.
 Passing a specific log file is recommended when the surrounding directory contains
