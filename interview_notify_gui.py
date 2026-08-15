@@ -34,6 +34,7 @@ except ImportError as e:
 import subprocess
 import threading
 import json
+import os
 from pathlib import Path
 import sys
 import queue
@@ -42,6 +43,7 @@ from interview_modes import default_bot_nicks, normalize_mode
 
 VERSION = '1.5.0'
 CONFIG_FILE = Path.home() / '.interview-notify-config.json'
+SCRIPT_FILE = Path(__file__).resolve().with_name('interview_notify.py')
 
 
 class InterviewNotifyGUI:
@@ -181,7 +183,7 @@ class InterviewNotifyGUI:
         log_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         self.log_text = scrolledtext.ScrolledText(log_frame, height=15, wrap=tk.WORD,
-                                                  state=tk.DISABLED, font=("Monaco", 10))
+                                                  state=tk.DISABLED, font="TkFixedFont")
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
         log_buttons = ttk.Frame(log_frame)
@@ -269,7 +271,7 @@ class InterviewNotifyGUI:
             return
 
         # Build command
-        cmd = [sys.executable, "interview_notify.py"]
+        cmd = [sys.executable, str(SCRIPT_FILE)]
         cmd.extend(["--topic", self.topic_var.get()])
         cmd.extend(["--server", self.server_var.get()])
         cmd.extend(["--nick", self.nick_var.get()])
@@ -300,8 +302,10 @@ class InterviewNotifyGUI:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 bufsize=1,
-                universal_newlines=True
+                env={**os.environ, 'PYTHONIOENCODING': 'utf-8'}
             )
 
             # Start thread to read output
@@ -322,7 +326,11 @@ class InterviewNotifyGUI:
     def stop_monitoring(self):
         if self.process:
             self.process.terminate()
-            self.process.wait(timeout=5)
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
             self.process = None
 
             self.start_button.config(state=tk.NORMAL)
@@ -387,7 +395,7 @@ class InterviewNotifyGUI:
         }
 
         try:
-            with open(CONFIG_FILE, 'w') as f:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2)
             messagebox.showinfo("Success", f"Configuration saved to {CONFIG_FILE}")
         except Exception as e:
@@ -399,7 +407,7 @@ class InterviewNotifyGUI:
             return
 
         try:
-            with open(CONFIG_FILE, 'r') as f:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 config = json.load(f)
 
             self.topic_var.set(config.get("topic", ""))

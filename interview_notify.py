@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import argparse, sys, threading, logging, re, requests
+import argparse, sys, threading, logging, re
 from pathlib import Path
 from time import sleep, time
 from datetime import datetime
@@ -8,6 +8,7 @@ from file_read_backwards import FileReadBackwards
 from hashlib import sha256
 from interview_modes import default_bot_nicks, normalize_mode, parse_interview_event
 from urllib.parse import urljoin
+from urllib.request import Request, urlopen
 
 try:
     from interview_database import InterviewDatabase
@@ -24,8 +25,13 @@ notification_lock = threading.Lock()
 recent_notifications = {}  # {notification_type: timestamp}
 notification_log_file = None
 db = None  # Global database instance
+args = None
 
-parser = argparse.ArgumentParser(prog='interview_notify.py',
+def user_path(value):
+  return Path(value).expanduser()
+
+
+parser = argparse.ArgumentParser(prog='interview-notify',
   description='IRC Interview Notifier v{}\nhttps://github.com/ftc2/interview-notify'.format(VERSION),
   epilog='''Sends a push notification with https://ntfy.sh/ when it's your turn to interview.
 They have a web client and mobile clients. You can have multiple clients subscribed to this.
@@ -37,15 +43,16 @@ On mobile, I suggest enabling the 'Instant delivery' feature as well as 'Keep al
   formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--topic', required=True, help='ntfy topic name to POST notifications to')
 parser.add_argument('--server', default=default_server, help='ntfy server to POST notifications to – default: {}'.format(default_server))
-parser.add_argument('--log-dir', required=True, dest='paths', type=Path, action='append', help='path to an IRC log file or directory (can be specified multiple times)')
+parser.add_argument('--log-dir', required=True, dest='paths', type=user_path, action='append', help='path to an IRC log file or directory (can be specified multiple times)')
+parser.add_argument('--log-encoding', choices=['utf-8', 'ascii', 'latin-1'], default='utf-8', help='IRC log file encoding – default: utf-8')
 parser.add_argument('--nick', required=True, help='your IRC nick')
 parser.add_argument('--check-bot-nicks', default=True, action=argparse.BooleanOptionalAction, help="attempt to parse bot's nick. disable if your log files are not like '<nick> message' – default: enabled")
 parser.add_argument('--bot-nicks', metavar='NICKS', help='comma-separated list of bot nicks to watch – default: Gatekeeper for red, Hermes for ops')
 parser.add_argument('--mode', choices=['red', 'ops', 'orp'], default='red', help='interview mode (orp is a legacy alias for ops) – default: red')
-parser.add_argument('--notification-log', dest='notif_log', type=Path, help='path to file for logging all notifications (optional)')
+parser.add_argument('--notification-log', dest='notif_log', type=user_path, help='path to file for logging all notifications (optional)')
 parser.add_argument('--rate-limit', dest='rate_limit', type=int, default=60, help='seconds to wait before sending duplicate notifications – default: 60')
 parser.add_argument('--enable-analytics', dest='enable_analytics', action='store_true', help='enable interview statistics tracking and analysis')
-parser.add_argument('--analytics-db', dest='analytics_db', type=Path, help='path to analytics database file (optional, defaults to ~/.interview-notify-history.db)')
+parser.add_argument('--analytics-db', dest='analytics_db', type=user_path, help='path to analytics database file (optional, defaults to ~/.interview-notify-history.db)')
 parser.add_argument('-v', action='count', default=5, dest='verbose', help='verbose (invoke multiple times for more verbosity)')
 parser.add_argument('--version', action='version', version='{} v{}'.format(parser.prog, VERSION))
 
@@ -164,11 +171,11 @@ def log_parse(log_path, parser_stop):
 
 def tail(path, parser_stop):
   """Poll file and yield lines as they appear"""
-  with FileReadBackwards(path) as f:
+  with FileReadBackwards(path, encoding=args.log_encoding) as f:
     last_line = f.readline()
     if last_line:
       yield last_line
-  with open(path) as f:
+  with open(path, encoding=args.log_encoding) as f:
     f.seek(0, 2) # os.SEEK_END
     while not parser_stop.is_set():
       line = f.readline()
@@ -277,10 +284,10 @@ def notify(data, topic=None, server=None, notification_type=None, **kwargs):
   if server[-1] != '/': server += '/'
   target = urljoin(server, topic, allow_fragments=False)
   # Remove notification_type from kwargs as it's not a valid ntfy header
-  headers = {k.capitalize():str(v).encode('utf-8') for (k,v) in kwargs.items()}
-  requests.post(target,
-                data=data.encode(encoding='utf-8'),
-                headers=headers)
+  headers = {k.capitalize(): str(v) for (k, v) in kwargs.items()}
+  request = Request(target, data=data.encode('utf-8'), headers=headers, method='POST')
+  with urlopen(request, timeout=30):
+    pass
 
   # Log notification if enabled
   log_notification(notification_type, kwargs.get('title', 'Notification'), data, kwargs.get('priority', 3))
@@ -341,37 +348,37 @@ def crit_quit(msg):
   logging.critical(msg)
   sys.exit()
 
-# ----------
+def main():
+  global args, db
 
-args = parser.parse_args()
-args.mode = normalize_mode(args.mode)
-if args.bot_nicks is None:
-  args.bot_nicks = default_bot_nicks(args.mode)
+  args = parser.parse_args()
+  args.mode = normalize_mode(args.mode)
+  if args.bot_nicks is None:
+    args.bot_nicks = default_bot_nicks(args.mode)
 
-args.verbose = 70 - (10*args.verbose) if args.verbose > 0 else 0
-logging.basicConfig(level=args.verbose, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+  args.verbose = 70 - (10*args.verbose) if args.verbose > 0 else 0
+  logging.basicConfig(level=args.verbose, format='%(asctime)s %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-# Initialize analytics database if enabled
-if args.enable_analytics:
-  if not DATABASE_AVAILABLE:
-    logging.error('Analytics enabled but interview_database module not available')
-    crit_quit('Cannot enable analytics without interview_database.py module')
-  db = InterviewDatabase(args.analytics_db)
-  logging.info(f'Analytics enabled, database: {db.db_path}')
-else:
-  logging.debug('Analytics disabled')
+  if args.enable_analytics:
+    if not DATABASE_AVAILABLE:
+      logging.error('Analytics enabled but interview_database module not available')
+      crit_quit('Cannot enable analytics without interview_database.py module')
+    db = InterviewDatabase(args.analytics_db)
+    logging.info(f'Analytics enabled, database: {db.db_path}')
+  else:
+    logging.debug('Analytics disabled')
 
-# Validate all log paths
-for path in args.paths:
-  if not path.is_file() and not path.is_dir():
-    crit_quit('log path invalid – "{}"'.format(path))
+  for path in args.paths:
+    if not path.is_file() and not path.is_dir():
+      crit_quit('log path invalid – "{}"'.format(path))
 
-# Start scanner thread for each log directory (multi-channel support)
-scanners = []
-for path in args.paths:
-  scanner = threading.Thread(target=log_scan, args=(path,))
-  scanner.start()
-  scanners.append(scanner)
-  logging.info('started scanner for "{}"'.format(path))
+  for path in args.paths:
+    scanner = threading.Thread(target=log_scan, args=(path,))
+    scanner.start()
+    logging.info('started scanner for "{}"'.format(path))
 
-anon_telemetry()
+  anon_telemetry()
+
+
+if __name__ == '__main__':
+  main()

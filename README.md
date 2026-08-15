@@ -27,12 +27,25 @@ it sends push notifications when:
 
 ## installing
 
-- install python3. i suggest homebrew, winget, or just use the installer: https://www.python.org/downloads/
-  - _this script might require python3.11_
-- install the `requests` module with `pip3 install requests` (or use `pipenv install` to automatically install dependencies)
-- clone this repo
-  - `git clone https://github.com/ftc2/interview-notify.git`
-- `python3 interview_notify.py`
+Install Python 3.9 or newer, then clone this repository. The notifier has no third-party
+runtime dependencies.
+
+Install the portable commands on Windows:
+
+```powershell
+py -3 -m pip install .
+```
+
+Install them on macOS or Linux:
+
+```bash
+python3 -m pip install .
+```
+
+This provides `interview-notify`, `interview-notify-gui`, and
+`interview-notify-stats`. You can also run directly from the cloned source with
+`py -3 interview_notify.py` on Windows or `python3 interview_notify.py` on macOS
+and Linux.
 
 ### for GUI users
 
@@ -67,7 +80,7 @@ python3 --version
 for a user-friendly graphical interface:
 
 ```bash
-python3 interview_notify_gui.py
+interview-notify-gui
 ```
 
 the GUI provides:
@@ -84,9 +97,9 @@ for advanced users and automation, use the CLI:
 pretty self explanatory if you read the help:
 
 ```
-./interview_notify.py -h
+interview-notify --help
 
-usage: interview_notify.py [-h] --topic TOPIC [--server SERVER] --log-dir PATH --nick NICK [--check-bot-nicks | --no-check-bot-nicks] [--bot-nicks NICKS] [--mode {red,ops,orp}] [-v] [--version]
+usage: interview-notify [-h] --topic TOPIC [--server SERVER] --log-dir PATH [--log-encoding {utf-8,ascii,latin-1}] --nick NICK [--check-bot-nicks | --no-check-bot-nicks] [--bot-nicks NICKS] [--mode {red,ops,orp}] [-v] [--version]
 
 IRC Interview Notifier v1.5.0
 https://github.com/ftc2/interview-notify
@@ -96,6 +109,8 @@ options:
   --topic TOPIC         ntfy topic name to POST notifications to
   --server SERVER       ntfy server to POST notifications to – default: https://ntfy.sh
   --log-dir PATH        path to IRC logs (continuously checks for newest file to parse)
+  --log-encoding {utf-8,ascii,latin-1}
+                        IRC log file encoding – default: utf-8
   --nick NICK           your IRC nick
   --check-bot-nicks, --no-check-bot-nicks
                         attempt to parse bot's nick. disable if your log files are not like '<nick> message' – default: enabled
@@ -115,19 +130,19 @@ On mobile, I suggest enabling the 'Instant delivery' feature as well as 'Keep al
 
 ## testing/troubleshooting
 
-first, use `-v` and make sure you can see new messages from IRC showing up:
+First, use `-v` and make sure you can see new messages from IRC showing up:
 
-`interview_notify.py --topic your_topic --log-dir /path/to/logs --nick your_nick -v`
+`interview-notify --topic your_topic --log-dir /path/to/logs --nick your_nick -v`
 
 ### testing notifications
 
-`interview_notify.py --topic your_topic --log-dir /path/to/logs --nick your_nick --bot-nicks Gatekeeper,your_nick -v`
+`interview-notify --topic your_topic --log-dir /path/to/logs --nick your_nick --bot-nicks Gatekeeper,your_nick -v`
 
 then type `Currently interviewing: your_nick` in IRC.
 
 if it doesn't work, maybe you have a wonky log file format. try with `--no-check-bot-nicks`:
 
-`interview_notify.py --topic your_topic --log-dir /path/to/logs --nick your_nick --no-check-bot-nicks -v`
+`interview-notify --topic your_topic --log-dir /path/to/logs --nick your_nick --no-check-bot-nicks -v`
 
 ### Orpheus (OPS)
 
@@ -136,9 +151,7 @@ invitation in a private message from Hermes. Point the notifier at both relevant
 or at a directory containing them:
 
 ```bash
-interview_notify.py --mode ops --topic your_topic \
-  --log-dir '/path/to/irc/logs/#recruitment.log' \
-  --nick your_nick
+interview-notify --mode ops --topic your_topic --log-dir '/path/to/irc/logs/#recruitment.log' --nick your_nick
 ```
 
 In `ops` mode, Hermes is the default bot nick. The legacy mode name `orp` is also
@@ -157,10 +170,7 @@ server and network logs that are updated independently.
 watch multiple IRC channels simultaneously by specifying `--log-dir` multiple times:
 
 ```bash
-interview_notify.py --topic your_topic \
-  --log-dir /path/to/red/logs \
-  --log-dir /path/to/ops/logs \
-  --nick your_nick
+interview-notify --topic your_topic --log-dir /path/to/red/logs --log-dir /path/to/ops/logs --nick your_nick
 ```
 
 ### interview analytics
@@ -169,8 +179,7 @@ track interview statistics and analyze patterns:
 
 ```bash
 # enable analytics tracking
-interview_notify.py --topic your_topic --log-dir /path/to/logs --nick your_nick \
-  --enable-analytics
+interview-notify --topic your_topic --log-dir /path/to/logs --nick your_nick --enable-analytics
 ```
 
 the script will automatically track:
@@ -183,13 +192,13 @@ the script will automatically track:
 
 ```bash
 # view stats for the last 30 days
-python3 view_stats.py
+interview-notify-stats
 
 # view stats for the last 7 days
-python3 view_stats.py --days 7
+interview-notify-stats --days 7
 
 # view stats for a specific channel
-python3 view_stats.py --channel "red-invites"
+interview-notify-stats --channel "red-invites"
 ```
 
 **example output:**
@@ -215,7 +224,7 @@ database is stored at `~/.interview-notify-history.db` by default. old data (>90
 ### running tests
 
 ```bash
-python3 -m unittest discover -s tests
+python -m unittest discover -s tests
 ```
 
 ### notification history
@@ -223,8 +232,7 @@ python3 -m unittest discover -s tests
 log all notifications to a file for review:
 
 ```bash
-interview_notify.py --topic your_topic --log-dir /path/to/logs --nick your_nick \
-  --notification-log ~/interview-notifications.log
+interview-notify --topic your_topic --log-dir /path/to/logs --nick your_nick --notification-log ~/interview-notifications.log
 ```
 
 ### rate limiting
@@ -233,6 +241,5 @@ prevent notification spam during mass events (like netsplits). default is 60 sec
 
 ```bash
 # set rate limit to 120 seconds
-interview_notify.py --topic your_topic --log-dir /path/to/logs --nick your_nick \
-  --rate-limit 120
+interview-notify --topic your_topic --log-dir /path/to/logs --nick your_nick --rate-limit 120
 ```
