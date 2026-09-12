@@ -258,11 +258,26 @@ class InterviewNotifyGUI:
         if not self.topic_var.get():
             messagebox.showerror("Configuration Error", "ntfy Topic is required")
             return False
+        if not self.server_var.get():
+            messagebox.showerror("Configuration Error", "ntfy Server is required")
+            return False
         if not self.nick_var.get():
             messagebox.showerror("Configuration Error", "Your Nick is required")
             return False
-        if not self.log_dirs:
+        if not isinstance(self.log_dirs, list) or not self.log_dirs:
             messagebox.showerror("Configuration Error", "At least one log file or directory is required")
+            return False
+        try:
+            rate_limit = int(self.rate_limit_var.get())
+            if rate_limit < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            messagebox.showerror(
+                "Configuration Error", "Rate Limit must be a nonnegative integer"
+            )
+            return False
+        if normalize_mode(self.mode_var.get()) not in ("red", "ops"):
+            messagebox.showerror("Configuration Error", "Mode must be Red or OPS")
             return False
         return True
 
@@ -309,7 +324,9 @@ class InterviewNotifyGUI:
             )
 
             # Start thread to read output
-            self.output_thread = threading.Thread(target=self.read_output, daemon=True)
+            self.output_thread = threading.Thread(
+                target=self.read_output, args=(self.process,), daemon=True
+            )
             self.output_thread.start()
 
             # Update UI
@@ -340,10 +357,10 @@ class InterviewNotifyGUI:
             self.log_message("-" * 60)
             self.log_message("Monitoring stopped")
 
-    def read_output(self):
+    def read_output(self, process):
         """Read process output in separate thread"""
         try:
-            for line in iter(self.process.stdout.readline, ''):
+            for line in iter(process.stdout.readline, ''):
                 if line:
                     self.log_queue.put(line.rstrip())
         except Exception as e:
@@ -410,19 +427,56 @@ class InterviewNotifyGUI:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 config = json.load(f)
 
+            if not isinstance(config, dict):
+                raise ValueError("configuration root must be an object")
+
+            string_fields = {
+                "topic": "",
+                "server": "https://ntfy.sh/",
+                "nick": "",
+                "bot_nicks": "",
+                "mode": "red",
+                "notif_log": "",
+            }
+            for field, default in string_fields.items():
+                if not isinstance(config.get(field, default), str):
+                    raise ValueError(f'configuration field "{field}" must be text')
+
+            mode = normalize_mode(config.get("mode", "red"))
+            if mode not in ("red", "ops"):
+                raise ValueError('configuration field "mode" must be red or ops')
+
+            rate_limit = config.get("rate_limit", "60")
+            try:
+                if int(rate_limit) < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError(
+                    'configuration field "rate_limit" must be a nonnegative integer'
+                ) from None
+
+            log_dirs = config.get("log_dirs", [])
+            if not isinstance(log_dirs, list) or not all(
+                isinstance(log_dir, str) for log_dir in log_dirs
+            ):
+                raise ValueError('configuration field "log_dirs" must be a list of paths')
+
+            for field in ("check_bot_nicks", "enable_notif_log"):
+                if not isinstance(config.get(field, False), bool):
+                    raise ValueError(f'configuration field "{field}" must be true or false')
+
             self.topic_var.set(config.get("topic", ""))
             self.server_var.set(config.get("server", "https://ntfy.sh/"))
             self.nick_var.set(config.get("nick", ""))
-            mode = normalize_mode(config.get("mode", "red"))
             self.mode_var.set(mode)
             self.bot_nicks_var.set(config.get("bot_nicks") or default_bot_nicks(mode))
-            self.rate_limit_var.set(config.get("rate_limit", "60"))
+            self.rate_limit_var.set(str(rate_limit))
             self.check_bot_nicks_var.set(config.get("check_bot_nicks", True))
             self.enable_notif_log_var.set(config.get("enable_notif_log", False))
             self.notif_log_var.set(config.get("notif_log", ""))
 
             # Load log directories
-            self.log_dirs = config.get("log_dirs", [])
+            self.log_dirs = log_dirs
             self.log_dir_listbox.delete(0, tk.END)
             for log_dir in self.log_dirs:
                 self.log_dir_listbox.insert(tk.END, log_dir)

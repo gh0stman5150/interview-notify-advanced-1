@@ -17,7 +17,8 @@ client and has no third-party Python runtime dependencies.
 - Detect mentions, disconnects, netsplits, and kicks in watched logs.
 - Watch one or more individual log files or directories. For a directory, the
   notifier follows the most recently modified file and switches when a newer
-  file appears.
+  file appears. Watchers wait through temporary file or directory gaps and
+  recover from truncation or replacement.
 - Rate-limit repeated non-critical notification types. Notifications for the
   configured user's interview, disconnects, and kicks always bypass the limit.
 - Append sent notifications to an optional plaintext history file.
@@ -40,6 +41,11 @@ SQLite database -> statistics command
 `interview_notify.py` selects and tails logs, recognizes general IRC events,
 applies rate limits, records analytics, and sends notifications. The GUI starts
 that notifier as a subprocess; `view_stats.py` reads the analytics database.
+
+When a parser starts or restarts, it processes the last existing line before
+following new lines. Delivery at that boundary is therefore at least once: a
+process restart can repeat the final notification. Rate-limit history is held
+in memory and also resets when the process restarts.
 
 ## Requirements
 
@@ -176,7 +182,8 @@ log. It does not expose analytics settings; use the CLI for analytics.
 
 Saved GUI configuration is plaintext at
 `~/.interview-notify-config.json`. It includes the ntfy topic, IRC nickname,
-server, and local paths.
+server, and local paths. The GUI rejects malformed field types, unsupported
+modes, and invalid rate limits without replacing the active form values.
 
 ## Analytics
 
@@ -231,7 +238,8 @@ missed outcomes. The current application does not automatically call its
 
 **No new log messages appear:** run with `-v -v -v`, verify the selected path,
 and confirm the IRC client is appending to that file. For a directory, check
-that the intended log is its most recently modified file.
+that the intended log is its most recently modified file. A temporarily empty
+or unavailable directory is retried until a readable log appears.
 
 **Interview messages are ignored:** verify `--mode` and `--bot-nicks`. If the
 log does not identify the sender, retry with `--no-check-bot-nicks` and review
@@ -239,8 +247,9 @@ the debug output for false positives.
 
 **Notifications do not arrive:** confirm that the device subscribes to exactly
 the configured topic, the ntfy URL is reachable, and HTTPS traffic is allowed.
-HTTP requests time out after 30 seconds; network errors are reported by the
-process.
+HTTP requests time out after 30 seconds. Failed requests are logged, are not
+retried, do not consume the non-critical rate-limit interval, and do not stop
+log processing.
 
 **Text cannot be decoded:** select the IRC client's actual encoding with
 `--log-encoding`.

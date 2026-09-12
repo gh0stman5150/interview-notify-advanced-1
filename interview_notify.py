@@ -60,33 +60,65 @@ def log_scan(log_path):
   """Poll dir for most recently modified log file and spawn a parser thread for the log"""
   if log_path.is_file():
     logging.info('scanner: watching log file "{}"'.format(log_path))
-    parser, _parser_stop = spawn_parser(log_path)
-    parser.start()
-    parser.join()
-    return
+    while True:
+      parser, _parser_stop = spawn_parser(log_path)
+      parser.start()
+      parser.join()
+      logging.error('scanner: parser stopped unexpectedly for "{}"; restarting'.format(log_path))
+      sleep(0.5)
 
   logging.info('scanner: watching logs in "{}"'.format(log_path))
-  curr = find_latest_log(log_path)
-  logging.debug('scanner: current log: "{}"'.format(curr.name))
-  parser, parser_stop = spawn_parser(curr)
-  parser.start()
+  curr = None
+  parser = None
+  parser_stop = None
+  directory_empty = False
   while True:
-    sleep(0.5) # polling delay for checking for newer logfile
     latest = find_latest_log(log_path)
-    if curr != latest:
+    if latest is None:
+      if not directory_empty:
+        logging.warning('scanner: no readable log files in "{}"; waiting'.format(log_path))
+        directory_empty = True
+      if parser is not None:
+        parser_stop.set()
+        parser.join()
+        parser = None
+        parser_stop = None
+        curr = None
+      sleep(0.5)
+      continue
+
+    directory_empty = False
+    if parser is None or curr != latest or not parser.is_alive():
+      if parser is not None:
+        parser_stop.set()
+        parser.join()
+      if curr is None:
+        logging.debug('scanner: current log: "{}"'.format(latest.name))
+      elif curr != latest:
+        logging.info('scanner: newer log found: "{}"'.format(latest.name))
+      else:
+        logging.error('scanner: parser stopped unexpectedly for "{}"; restarting'.format(latest))
       curr = latest
-      logging.info('scanner: newer log found: "{}"'.format(curr.name))
-      parser_stop.set()
-      parser.join()
       parser, parser_stop = spawn_parser(curr)
       parser.start()
+    sleep(0.5) # polling delay for checking for newer logfile
 
 def find_latest_log(log_path):
   """Find latest log file"""
-  files = [f for f in log_path.iterdir() if f.is_file() and f.name not in ['.DS_Store', 'thumbs.db']]
-  if len(files) == 0:
-    crit_quit('no log files found in "{}"'.format(log_path))
-  return max(files, key=lambda f: f.stat().st_mtime)
+  files = []
+  try:
+    for path in log_path.iterdir():
+      try:
+        if path.is_file() and path.name not in ['.DS_Store', 'thumbs.db']:
+          files.append((path.stat().st_mtime, path))
+      except OSError:
+        continue
+  except OSError as e:
+    logging.warning('scanner: unable to read log directory "{}": {}'.format(log_path, e))
+    return None
+  if not files:
+    return None
+  return max(files, key=lambda item: item[0])[1]
 
 def spawn_parser(log_path):
   """Spawn new parser thread"""
@@ -121,27 +153,30 @@ def log_parse(log_path, parser_stop):
 
     # Check for analytics events first (before notifications)
     if db and args.enable_analytics:
-      # Check for interview start
-      if interview_event and interview_event.username:
-        event_channel = interview_event.interview_channel or channel
-        db.record_interview_start(
-          interview_event.username,
-          interview_event.queue_length,
-          event_channel,
-        )
-        if interview_event.queue_length is not None:
-          db.record_queue_snapshot(interview_event.queue_length, event_channel)
-        logging.debug(
-          f'Analytics: Recorded interview start for {interview_event.username}, '
-          f'queue: {interview_event.queue_length}'
-        )
+      try:
+        # Check for interview start
+        if interview_event and interview_event.username:
+          event_channel = interview_event.interview_channel or channel
+          db.record_interview_start(
+            interview_event.username,
+            interview_event.queue_length,
+            event_channel,
+          )
+          if interview_event.queue_length is not None:
+            db.record_queue_snapshot(interview_event.queue_length, event_channel)
+          logging.debug(
+            f'Analytics: Recorded interview start for {interview_event.username}, '
+            f'queue: {interview_event.queue_length}'
+          )
 
-      # Check for interview outcome
-      outcome_data = parse_interview_outcome(line)
-      if outcome_data:
-        username, outcome, message = outcome_data
-        db.record_interview_outcome(username, outcome, message, channel)
-        logging.debug(f'Analytics: Recorded {outcome} outcome for {username}')
+        # Check for interview outcome
+        outcome_data = parse_interview_outcome(line)
+        if outcome_data:
+          username, outcome, message = outcome_data
+          db.record_interview_outcome(username, outcome, message, channel)
+          logging.debug(f'Analytics: Recorded {outcome} outcome for {username}')
+      except Exception as e:
+        logging.error('analytics write failed; continuing without this record: {}'.format(e))
 
     # Now check for notifications
     if interview_event:
@@ -171,18 +206,38 @@ def log_parse(log_path, parser_stop):
 
 def tail(path, parser_stop):
   """Poll file and yield lines as they appear"""
-  with FileReadBackwards(path, encoding=args.log_encoding) as f:
-    last_line = f.readline()
-    if last_line:
-      yield last_line
-  with open(path, encoding=args.log_encoding) as f:
-    f.seek(0, 2) # os.SEEK_END
-    while not parser_stop.is_set():
-      line = f.readline()
-      if not line:
-        sleep(0.1) # polling delay for checking for new lines
-        continue
-      yield line
+  position = None
+  file_identity = None
+  while not parser_stop.is_set():
+    try:
+      current_stat = path.stat()
+      current_identity = (current_stat.st_dev, current_stat.st_ino)
+      if position is None:
+        with FileReadBackwards(path, encoding=args.log_encoding) as backwards_file:
+          last_line = backwards_file.readline()
+          if last_line:
+            yield last_line
+        position = current_stat.st_size
+      elif current_identity != file_identity:
+        logging.info('parser: log file replaced; reading from start "{}"'.format(path))
+        position = 0
+      elif current_stat.st_size < position:
+        logging.info('parser: log file truncated; reading from start "{}"'.format(path))
+        position = 0
+
+      file_identity = current_identity
+      with open(path, encoding=args.log_encoding) as f:
+        f.seek(position)
+        while not parser_stop.is_set():
+          line = f.readline()
+          if not line:
+            break
+          position = f.tell()
+          yield line
+    except OSError as e:
+      logging.warning('parser: log file unavailable "{}": {}; retrying'.format(path, e))
+
+    parser_stop.wait(0.1)
 
 def check_trigger(line, trigger, disregard_bot_nicks=False):
   """Check for a trigger in a line"""
@@ -276,41 +331,63 @@ def notify(data, topic=None, server=None, notification_type=None, **kwargs):
   if server is None: server=args.server
 
   # Rate limiting check
-  if notification_type and should_rate_limit(notification_type):
-    logging.debug('rate-limited notification type: {}'.format(notification_type))
-    return
+  reservation = None
+  if notification_type:
+    rate_limited, reservation = reserve_notification(notification_type)
+    if rate_limited:
+      logging.debug('rate-limited notification type: {}'.format(notification_type))
+      return False
 
-  # Send notification
-  if server[-1] != '/': server += '/'
-  target = urljoin(server, topic, allow_fragments=False)
-  # Remove notification_type from kwargs as it's not a valid ntfy header
-  headers = {k.capitalize(): str(v) for (k, v) in kwargs.items()}
-  request = Request(target, data=data.encode('utf-8'), headers=headers, method='POST')
-  with urlopen(request, timeout=30):
-    pass
+  try:
+    # Send notification
+    if server[-1] != '/': server += '/'
+    target = urljoin(server, topic, allow_fragments=False)
+    # Remove notification_type from kwargs as it's not a valid ntfy header
+    headers = {k.capitalize(): str(v) for (k, v) in kwargs.items()}
+    request = Request(target, data=data.encode('utf-8'), headers=headers, method='POST')
+    with urlopen(request, timeout=30):
+      pass
+  except Exception as e:
+    if notification_type:
+      clear_failed_notification(notification_type, reservation)
+    logging.error('notification send failed: {}'.format(e))
+    return False
 
   # Log notification if enabled
   log_notification(notification_type, kwargs.get('title', 'Notification'), data, kwargs.get('priority', 3))
+  return True
 
 def should_rate_limit(notification_type):
   """Check if notification should be rate limited"""
+  rate_limited, _reservation = reserve_notification(notification_type)
+  return rate_limited
+
+def reserve_notification(notification_type):
+  """Reserve a non-critical notification type for one send attempt."""
   with notification_lock:
     current_time = time()
 
     # Always send critical notifications (your interview, disconnect, kick)
     if notification_type in ['your_interview', 'disconnect', 'kick']:
-      recent_notifications[notification_type] = current_time
-      return False
+      return False, None
 
     # Check if we've sent this notification type recently
     if notification_type in recent_notifications:
       time_since_last = current_time - recent_notifications[notification_type]
       if time_since_last < args.rate_limit:
-        return True  # Rate limit this notification
+        return True, None  # Rate limit this notification
 
     # Update the timestamp for this notification type
     recent_notifications[notification_type] = current_time
-    return False
+    return False, current_time
+
+def clear_failed_notification(notification_type, reservation):
+  """Release a non-critical notification's rate-limit reservation after failure."""
+  if reservation is None:
+    return
+  with notification_lock:
+    if recent_notifications.get(notification_type) == reservation:
+      recent_notifications.pop(notification_type)
 
 def log_notification(notification_type, title, message, priority):
   """Log notification to file if enabled"""
