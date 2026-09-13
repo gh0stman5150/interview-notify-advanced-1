@@ -127,7 +127,7 @@ Important options:
 | --- | --- |
 | `--topic TOPIC` | Required ntfy topic. |
 | `--server URL` | ntfy base URL; defaults to `https://ntfy.sh/`. |
-| `--log-dir PATH` | Required log file or directory; repeat for multiple paths. |
+| `--log-dir PATH` | Required log file or directory; repeat for multiple paths. Repeated paths and aliases to the same filesystem object are monitored once. |
 | `--log-encoding ENCODING` | `utf-8` (default), `ascii`, or `latin-1`. |
 | `--nick NICK` | Required IRC nickname used for personal alerts. |
 | `--mode MODE` | `red` (default), `ops`, or legacy alias `orp`. |

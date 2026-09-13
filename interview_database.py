@@ -31,12 +31,12 @@ class InterviewDatabase:
         """Context manager for database connections"""
         # Enable WAL mode for better concurrent access and set timeout
         conn = sqlite3.connect(self.db_path, timeout=10.0)
-        conn.row_factory = sqlite3.Row
-
-        # Enable Write-Ahead Logging for better concurrency
-        conn.execute('PRAGMA journal_mode=WAL')
-
         try:
+            conn.row_factory = sqlite3.Row
+
+            # Enable Write-Ahead Logging for better concurrency
+            conn.execute('PRAGMA journal_mode=WAL')
+
             yield conn
             conn.commit()
         except Exception as e:

@@ -120,6 +120,21 @@ def find_latest_log(log_path):
     return None
   return max(files, key=lambda item: item[0])[1]
 
+def deduplicate_log_paths(paths):
+  """Return one canonical path for each configured filesystem object."""
+  unique_paths = []
+  seen = set()
+  for path in paths:
+    canonical_path = path.resolve()
+    stat = canonical_path.stat()
+    identity = (stat.st_dev, stat.st_ino)
+    if identity in seen:
+      logging.warning('skipping duplicate log path "{}"'.format(path))
+      continue
+    seen.add(identity)
+    unique_paths.append(canonical_path)
+  return unique_paths
+
 def spawn_parser(log_path):
   """Spawn new parser thread"""
   logging.debug('spawning new parser')
@@ -449,6 +464,7 @@ def main():
     if not path.is_file() and not path.is_dir():
       crit_quit('log path invalid – "{}"'.format(path))
 
+  args.paths = deduplicate_log_paths(args.paths)
   for path in args.paths:
     scanner = threading.Thread(target=log_scan, args=(path,))
     scanner.start()

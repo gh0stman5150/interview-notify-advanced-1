@@ -33,6 +33,7 @@ except ImportError as e:
 
 import subprocess
 import threading
+import tempfile
 import json
 import os
 from pathlib import Path
@@ -337,18 +338,26 @@ class InterviewNotifyGUI:
             self.log_message("Monitoring started successfully!")
 
         except Exception as e:
+            if self.process:
+                process = self.process
+                try:
+                    self._terminate_process(process)
+                except Exception as cleanup_error:
+                    self.log_message(f"ERROR stopping failed process: {cleanup_error}")
+                finally:
+                    self.process = None
             messagebox.showerror("Error", f"Failed to start monitoring: {e}")
             self.log_message(f"ERROR: {e}")
 
     def stop_monitoring(self):
         if self.process:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+            process = self.process
+            self._terminate_process(process)
             self.process = None
+
+            output_thread = getattr(self, 'output_thread', None)
+            if output_thread and output_thread is not threading.current_thread():
+                output_thread.join(timeout=1)
 
             self.start_button.config(state=tk.NORMAL)
             self.stop_button.config(state=tk.DISABLED)
@@ -356,6 +365,15 @@ class InterviewNotifyGUI:
 
             self.log_message("-" * 60)
             self.log_message("Monitoring stopped")
+
+    @staticmethod
+    def _terminate_process(process):
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
 
     def read_output(self, process):
         """Read process output in separate thread"""
@@ -411,12 +429,31 @@ class InterviewNotifyGUI:
             "notif_log": self.notif_log_var.get()
         }
 
+        temp_path = None
         try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2)
+            with tempfile.NamedTemporaryFile(
+                'w',
+                encoding='utf-8',
+                dir=CONFIG_FILE.parent,
+                prefix=f'.{CONFIG_FILE.name}.',
+                suffix='.tmp',
+                delete=False,
+            ) as stream:
+                temp_path = Path(stream.name)
+                json.dump(config, stream, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_path, CONFIG_FILE)
+            temp_path = None
             messagebox.showinfo("Success", f"Configuration saved to {CONFIG_FILE}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save config: {e}")
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def load_config(self):
         """Load configuration from file"""

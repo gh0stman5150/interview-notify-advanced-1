@@ -8,11 +8,19 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.error import URLError
 
+from interview_database import InterviewDatabase
 import interview_notify
 
 
 class NotificationReliabilityTests(unittest.TestCase):
     def setUp(self):
+        self.args_patcher = patch.object(interview_notify, 'args')
+        self.args_patcher.start()
+        self.addCleanup(self.args_patcher.stop)
+        self.db_patcher = patch.object(interview_notify, 'db', None)
+        self.db_patcher.start()
+        self.addCleanup(self.db_patcher.stop)
+        self.addCleanup(interview_notify.recent_notifications.clear)
         interview_notify.args = SimpleNamespace(
             topic='test-topic',
             server='https://ntfy.sh/',
@@ -91,11 +99,23 @@ class NotificationReliabilityTests(unittest.TestCase):
 
 class FileWatcherReliabilityTests(unittest.TestCase):
     def setUp(self):
+        self.args_patcher = patch.object(interview_notify, 'args')
+        self.args_patcher.start()
+        self.addCleanup(self.args_patcher.stop)
         interview_notify.args = SimpleNamespace(log_encoding='utf-8')
 
     def test_empty_directory_is_a_recoverable_state(self):
         with tempfile.TemporaryDirectory() as directory:
             self.assertIsNone(interview_notify.find_latest_log(Path(directory)))
+
+    def test_duplicate_log_paths_are_deduplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'chat.log'
+            path.touch()
+
+            paths = interview_notify.deduplicate_log_paths([path, path])
+
+        self.assertEqual(paths, [path.resolve()])
 
     def test_tail_recovers_after_truncation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -192,6 +212,39 @@ class FileWatcherReliabilityTests(unittest.TestCase):
     @staticmethod
     def _has_line(lines, expected):
         return expected in (line.strip() for line in lines)
+
+
+class DatabaseReliabilityTests(unittest.TestCase):
+    def test_database_schema_initialization_is_repeatable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = InterviewDatabase(Path(directory) / 'history.db')
+
+            database.init_database()
+
+            with database.get_connection() as connection:
+                tables = {
+                    row['name']
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+
+        self.assertIn('interviews', tables)
+        self.assertIn('queue_snapshots', tables)
+
+    def test_connection_closes_when_wal_setup_fails(self):
+        connection = Mock()
+        connection.execute.side_effect = OSError('pragma failed')
+        database = object.__new__(InterviewDatabase)
+        database.db_path = Path('synthetic.db')
+
+        with patch(
+            'interview_database.sqlite3.connect', return_value=connection
+        ), self.assertRaisesRegex(OSError, 'pragma failed'):
+            with database.get_connection():
+                pass
+
+        connection.close.assert_called_once_with()
 
 
 if __name__ == '__main__':
